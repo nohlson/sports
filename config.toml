@@ -1,0 +1,4 @@
+sites = [
+    { name = "Bovada", url = "https://www.bovada.lv/sports/basketball/ncaa-march-madness" },
+    { name = "MyBookie", url = "https://mybookie.ag/sportsbook/ncaa-basketball/"}
+]
