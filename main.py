@@ -3,25 +3,28 @@ from multiprocessing.pool import ThreadPool
 import time
 import sys
 import toml
-import random
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 import re
 from bs4 import BeautifulSoup
-import traceback
 import signal
 from difflib import SequenceMatcher
+import smtplib
+
 
 class InvalidOdds(Exception):
     pass
 
+
 class NotArbitrageScenario(Exception):
     pass
+
 
 class Site:
     def __init__(self, name, url):
         self.name = name
         self.url = url
+
 
 class Bovada(Site):
     def __init__(self, name, url):
@@ -46,7 +49,6 @@ class Bovada(Site):
         :param page_source: String HTML page source
         :return: List of Game objects
         """
-
         found_games = []
 
         soup = BeautifulSoup(page_source, 'lxml')
@@ -138,8 +140,6 @@ class MyBookie(Site):
         return found_games
 
 
-
-
 class SiteOdds:
 
     def moneyline_to_decimal(self, ml):
@@ -151,7 +151,8 @@ class SiteOdds:
         :return: float decimal odds
         """
 
-        if ml > 0: return (ml + 100)/100
+        if ml > 0:
+            return (ml + 100)/100
         return 100 / -ml + 1
 
     def __init__(self, site, ml1=None, ml2=None, odds1=None, odds2=None, url=None):
@@ -168,7 +169,6 @@ class SiteOdds:
         self.ml1 = ml1
         self.ml2 = ml2
         self.url = url
-
 
 
 class Game:
@@ -204,17 +204,16 @@ class Game:
         return repr_str
 
 
-
-
 class ArbCrawler:
     """
     Web crawler that finds arbitrage betting situations
     Maths: http://www.aussportsbetting.com/guide/sports-betting-arbitrage/
     """
 
-
     def __init__(self, config_file):
         self.crawler_process = None
+        self.arbitrage_actioner_process = None
+        self.game_watcher_process = None
         self.game_queue = None
         self.sites = []
 
@@ -222,7 +221,7 @@ class ArbCrawler:
             c = f.read()
             self.config = toml.loads(c)
 
-        #create the site object that arbcrawler will use from the config
+        # Create the site object that arbcrawler will use from the config
 
         for i in self.config['sites']:
             if i['name'] == 'Bovada':
@@ -241,13 +240,22 @@ class ArbCrawler:
         # arb_gueue is a queue for games that the analyzer has determined that are arbitrage opportunities
         self.arb_queue = Queue()
 
-        #driver for selenium
+        # Driver for selenium
         options = Options()
         options.headless = True
         self.driver = webdriver.Firefox(options=options)
 
         # How similar names have to be to match. Smaller is more lenient, larger is more stringent
         self.difference_parameter = 0.6
+
+        self.mail_server = 'smtp.gmail.com'
+        self.mail_server_port = 465
+        self.gmail_user = 'sportsarbbot@gmail.com'
+        self.gmail_pass = 'S7#lf5wU6m'
+        self.email_recipients = ['nateohlson@gmail.com', '5743231919@vtext.com']
+
+        # interval in minutes for site recheck
+        self.interval_minutes = 5
 
     def moneyline_to_decimal(self, ml):
         """ Converts the positive or negative moneyline value into
@@ -258,7 +266,8 @@ class ArbCrawler:
         :return: float decimal odds
         """
 
-        if ml > 0: return (ml + 100)/100
+        if ml > 0:
+            return (ml + 100)/100
         return 100 / -ml + 1
 
     def determine_margin_moneyline(self, mla, mlb):
@@ -297,7 +306,8 @@ class ArbCrawler:
         :raises NotArbitrageScenario:
         """
 
-        if self.determine_margin_decimal(odds1, odds2) >= 0: raise NotArbitrageScenario
+        if self.determine_margin_decimal(odds1, odds2) >= 0:
+            raise NotArbitrageScenario
 
         w1 = 1 / ((odds1 / odds2) + 1)
         w2 = 1 / ((odds2 / odds1) + 1)
@@ -315,7 +325,8 @@ class ArbCrawler:
         :return:
         """
 
-        if self.determine_margin_decimal(odds1, odds2) >= 0: raise NotArbitrageScenario
+        if self.determine_margin_decimal(odds1, odds2) >= 0:
+            raise NotArbitrageScenario
 
         return wager1 * odds1 - (wager1 + wager2), wager2 * odds2 - (wager1 + wager2)
 
@@ -330,67 +341,51 @@ class ArbCrawler:
         print("Crawler starting up...")
         print("Crawler started.")
         while True:
-
-            games_collected =[]
-            try:
-                for site in self.sites:
-                    self.driver.get(site.url)
-                    page_source = self.driver.page_source
-                    games_from_site = site.parse_page(page_source, site.url)
-
-
-                    # determine if games have been collected before
-                    for site_game in games_from_site:
-                        found_in_existing_games = False
-                        for existing_game in games_collected:
-                            # This if statement checks to see if the team names are similar enough to be considered the same
-                            if SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio() >\
-                                    self.difference_parameter and \
-                                    SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio() >\
-                                    self.difference_parameter:
-                                # code to check sequence matcher
-                                print(" We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(site_game.team_1_name, existing_game.team_1_name, SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio(), site_game.team_2_name, existing_game.team_2_name,  SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio()))
-
-                                # update existing game
-                                existing_game.site_odds = existing_game.site_odds + site_game.site_odds
-                                found_in_existing_games = True
-
-                        if not found_in_existing_games:
-                            games_collected.append(site_game)
-
-
-                for game in games_collected:
-
-                    if len(game.site_odds) >= 2:
-                        print(game)
-                        game_queue.put(game)
-
-
-
-
-                print("Here")
+            games_collected = []
+            for site in self.sites:
+                self.driver.get(site.url)
                 time.sleep(10)
-            except Exception as e:
-                traceback.print_exc()
-                self.driver.quit()
-                game_queue.put(None)
-                sys.exit()
+                page_source = self.driver.page_source
+                games_from_site = site.parse_page(page_source, site.url)
 
+                # determine if games have been collected before
+                for site_game in games_from_site:
+                    found_in_existing_games = False
+                    for existing_game in games_collected:
+                        # This if statement checks to see if the team names are similar enough to be considered the same
+                        if SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio() >\
+                                self.difference_parameter and \
+                                SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio() >\
+                                self.difference_parameter:
+                            # code to check sequence matcher
+                            print(" We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(site_game.team_1_name, existing_game.team_1_name, SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio(), site_game.team_2_name, existing_game.team_2_name,  SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio()))
 
+                            # update existing game
+                            existing_game.site_odds = existing_game.site_odds + site_game.site_odds
+                            found_in_existing_games = True
 
+                    if not found_in_existing_games:
+                        games_collected.append(site_game)
+
+            for game in games_collected:
+                if len(game.site_odds) >= 2:
+                    print(game)
+                    game_queue.put(game)
+
+            print("Completed scraping cycle")
+            time.sleep(self.interval_minutes * 60) # Wait for time in mins * 60 secs
 
         print("Crawler shutting down")
-
 
     def game_analyzer(self, game, arb_queue):
         """
         Worker thread routine for game_watcher to for analysis
 
-        As written it will return true at first arbitrage opportunity with necessary information
+        As written it will return true at first arbitrage opportunity found between a pair of SiteOdds with necessary information
         populated in the Game object
 
         :param game: Game object, the game that is being analyzed
-        :return:
+        :return: None
         """
         # Check to see among SiteOdds if there is an arbitrage play
         time.sleep(1)
@@ -398,12 +393,12 @@ class ArbCrawler:
         # compare odds between all combinations of sites
         for i in game.site_odds:
             for j in game.site_odds:
-                #current version only supports moneyline
+                # Current version only supports moneyline
                 if i is not j:
                     # Determine if one site has best odds for one event and the other site
                     # has best odds for the other event. this is necessary for arbitrage
                     if i.odds1 > j.odds1 and j.odds2 > i.odds2:
-                        #test i.odds1 and j.odds2 for arbitrage opportunity
+                        # Test i.odds1 and j.odds2 for arbitrage opportunity
                         if self.determine_margin_decimal(i.odds1, j.odds2) < 0:
                             # is an opportunity
                             game.arbitrage_opportunity = True
@@ -425,10 +420,6 @@ class ArbCrawler:
                             arb_queue.put(game)
                             return
 
-
-
-
-
     def game_watcher(self, game_queue, arb_queue):
         """
         Waits for games to enter the queue and then adds them to a threadpool for analysis.
@@ -440,7 +431,6 @@ class ArbCrawler:
 
         #create a pool of worker threads to help game analyzer
         pool = ThreadPool(processes=5)
-
 
         print("Game watcher started.")
         while True:
@@ -454,8 +444,46 @@ class ArbCrawler:
 
         pool.join()
 
-    def arbitrage_actioner(self, arb_queue):
+    def send_game_notification(self, game):
+        """
+        Send an email notification with information pertaining to the list of arb opportunity games
+        :param games: List of Game objects
+        :return: None
+        """
+        subject = 'Arbitrage Opportunity'
 
+        mail_body = "The bot has found the following arbitrage opportunity:\n"
+
+        mail_body += "{}\n".format(str(game))
+
+        mail_body += "\nUse this strategy:\n"
+
+        mail_body += "    Wager {} {} at odds {} on {} and {} {} at odds {} on {} for margin {}\n".format(
+            game.team_1_name,
+            game.wager_ratio_1,
+            game.arb_site_odds_1.odds1,
+            game.arb_site_odds_1.site.name,
+            game.team_2_name,
+            game.wager_ratio_2,
+            game.arb_site_odds_2.odds2,
+            game.arb_site_odds_2.site.name,
+            game.margin)
+
+        mail_body += "\nSent from ArbCrawler"
+
+        message = "From: {}\nTo: {}\nSubject: {} {}".format(self.gmail_user, ", ".join(self.email_recipients),
+                                                            subject, mail_body)
+
+        try:
+            server = smtplib.SMTP_SSL(self.mail_server, self.mail_server_port)
+            server.ehlo()
+            server.login(self.gmail_user, self.gmail_pass)
+            server.sendmail(self.gmail_user, self.email_recipients, message)
+            server.close()
+        except:
+            print("There was an error sending an email.")
+
+    def arbitrage_actioner(self, arb_queue):
 
         print("Arbitrage actioner starting up...")
 
@@ -474,15 +502,16 @@ class ArbCrawler:
                                                                                found_arbitrage_opportunity.arb_site_odds_2.odds2,
                                                                                found_arbitrage_opportunity.arb_site_odds_2.site.name,
                                                                                found_arbitrage_opportunity.margin))
-            # Do something useful here
+
+            # Notify by email
+            self.send_game_notification(found_arbitrage_opportunity)
 
     def sigterm_handler(self, signal, frame):
-        #NEEDS FIXING
+        # NEEDS FIXING
         print('Shutting down')
         self.game_queue.put(None)
         self.arb_queue.put(None)
         sys.exit(0)
-
 
     def main(self):
         print("Starting ArbCrawler...")
@@ -500,21 +529,15 @@ class ArbCrawler:
 
         # Create and start the arbitrage actioner process
         print("Creating game analyzer process...")
-        self.arbitrage_actioner_thread = Process(target=self.arbitrage_actioner, args=(self.arb_queue,))
-        self.arbitrage_actioner_thread.start()
-
-
+        self.arbitrage_actioner_process = Process(target=self.arbitrage_actioner, args=(self.arb_queue,))
+        self.arbitrage_actioner_process.start()
 
         print("ArbCrawler started, workers running...")
         self.crawler_process.join()
         self.game_watcher_process.join()
-        self.arbitrage_actioner_thread.join()
+        self.arbitrage_actioner_process.join()
 
         print("Exiting ArbCrawler")
-
-
-
-
 
 
 if __name__ == "__main__":
@@ -523,7 +546,6 @@ if __name__ == "__main__":
         sys.exit()
 
     arb_crawler = ArbCrawler(sys.argv[1])
-
 
     arb_crawler.main()
 
