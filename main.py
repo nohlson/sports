@@ -23,14 +23,14 @@ class NotArbitrageScenario(Exception):
 
 
 class Site:
-    def __init__(self, name, url):
+    def __init__(self, name, urls):
         self.name = name
-        self.url = url
+        self.urls = urls
 
 
 class Bovada(Site):
-    def __init__(self, name, url):
-        Site.__init__(self, name, url)
+    def __init__(self, name, urls):
+        Site.__init__(self, name, urls)
         self.games_xpath = "/html/body/bx-site/ng-component/div/sp-main/div/main/div/section/main/sp-home/div/sp-next-events/div/div/div/sp-coupon"
 
     def parse_page(self, page_source, url):
@@ -99,8 +99,8 @@ class Bovada(Site):
 
 
 class MyBookie(Site):
-    def __init__(self, name, url):
-        Site.__init__(self, name, url)
+    def __init__(self, name, urls):
+        Site.__init__(self, name, urls)
         self.games_xpath = ""
         self.game_element_mapping = {}
 
@@ -132,15 +132,22 @@ class MyBookie(Site):
             team_a = tags[i]['data-team']
             team_b = tags[i+1]['data-team']
 
+            # Special Case: ignore any first half bets, first two characters will be "1H"
+            # TODO: make this better so that 1H bets become own game
+            if team_a[:2] == "1H" or team_b[:2] == "1H":
+                continue
+
             ml1 = tags[i]['data-odds']
             ml2 = tags[i+1]['data-odds']
 
+            # Skip this game if there aren't odds for both outcomes
+            # TODO: make this better
             if ml1 == "":
-                ml1 = None
+                continue
             else:
                 ml1 = int(ml1)
             if ml2 == "":
-                ml2 = None
+                continue
             else:
                 ml2 = int(ml2)
 
@@ -236,18 +243,27 @@ class ArbCrawler:
             self.config = toml.loads(c)
 
         # Create the site object that arbcrawler will use from the config
+        # Only supports Bovada and MyBookie
 
-        for i in self.config['sites']:
-            if i['name'] == 'Bovada':
-                new_site = Bovada(name=i['name'], url=i['url'])
-            elif i['name'] == 'MyBookie':
-                new_site = MyBookie(name=i['name'], url=i['url'])
-            else:
-                new_site = Site(name=i['name'], url=i['url'])
-            self.sites.append(new_site)
+        for page in self.config['pages']:
+            found_existing_site = False
+            for site in self.sites:
+                if site.name == page['site_name']:
+                    site.urls.append(page['url'])
+                    found_existing_site = True
+                    break
+            if not found_existing_site:
+                if page['site_name'] == 'Bovada':
+                    new_site = Bovada(name=page['site_name'], urls=[page['url']])
+                elif page['site_name'] == 'MyBookie':
+                    new_site = MyBookie(name=page['site_name'], urls=[page['url']])
+
+                self.sites.append(new_site)
 
         for i in self.sites:
-            print(i.name)
+            for url in i.urls:
+                print(i.name)
+                print(url)
 
         # game queue is a queue for games that the crawler has found
         self.game_queue = Queue()
@@ -359,29 +375,31 @@ class ArbCrawler:
             while True:
                 games_collected = []
                 for site in self.sites:
-                    self.driver.get(site.url)
-                    sleep(10)
-                    page_source = self.driver.page_source
-                    games_from_site = site.parse_page(page_source, site.url)
+                    for url in site.urls:
+                        print("Getting games from: {}".format(url))
+                        self.driver.get(url)
+                        sleep(10)
+                        page_source = self.driver.page_source
+                        games_from_site = site.parse_page(page_source, url)
 
-                    # determine if games have been collected before
-                    for site_game in games_from_site:
-                        found_in_existing_games = False
-                        for existing_game in games_collected:
-                            # This if statement checks to see if the team names are similar enough to be considered the same
-                            if SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio() >\
-                                    self.difference_parameter and \
-                                    SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio() >\
-                                    self.difference_parameter:
-                                # code to check sequence matcher
-                                print(" We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(site_game.team_1_name, existing_game.team_1_name, SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio(), site_game.team_2_name, existing_game.team_2_name,  SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio()))
+                        # determine if games have been collected before
+                        for site_game in games_from_site:
+                            found_in_existing_games = False
+                            for existing_game in games_collected:
+                                # This if statement checks to see if the team names are similar enough to be considered the same
+                                if SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio() >\
+                                        self.difference_parameter and \
+                                        SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio() >\
+                                        self.difference_parameter:
+                                    # code to check sequence matcher
+                                    print(" We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(site_game.team_1_name, existing_game.team_1_name, SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio(), site_game.team_2_name, existing_game.team_2_name,  SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio()))
 
-                                # update existing game
-                                existing_game.site_odds = existing_game.site_odds + site_game.site_odds
-                                found_in_existing_games = True
+                                    # update existing game
+                                    existing_game.site_odds = existing_game.site_odds + site_game.site_odds
+                                    found_in_existing_games = True
 
-                        if not found_in_existing_games:
-                            games_collected.append(site_game)
+                            if not found_in_existing_games:
+                                games_collected.append(site_game)
 
                 for game in games_collected:
                     if len(game.site_odds) >= 2:
