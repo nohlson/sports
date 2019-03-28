@@ -1,6 +1,7 @@
 from multiprocessing import Process, Queue
 from multiprocessing.pool import ThreadPool
-import time
+from multiprocessing import Event
+from time import sleep
 import sys
 import toml
 from selenium import webdriver
@@ -10,6 +11,7 @@ from bs4 import BeautifulSoup
 import signal
 from difflib import SequenceMatcher
 import smtplib
+import traceback
 
 
 class InvalidOdds(Exception):
@@ -224,6 +226,9 @@ class ArbCrawler:
         self.arbitrage_actioner_process = None
         self.game_watcher_process = None
         self.game_queue = None
+
+        self.shutdown_event = Event()
+
         self.sites = []
 
         with open(config_file, 'r') as f:
@@ -339,7 +344,7 @@ class ArbCrawler:
 
         return wager1 * odds1 - (wager1 + wager2), wager2 * odds2 - (wager1 + wager2)
 
-    def crawler(self, game_queue):
+    def crawler(self, game_queue, shutdown_event):
         """
         Crawler that runs on a separate process to find potential games.
 
@@ -348,45 +353,59 @@ class ArbCrawler:
         """
 
         print("Crawler starting up...")
-        print("Crawler started.")
-        while True:
-            games_collected = []
-            for site in self.sites:
-                self.driver.get(site.url)
-                time.sleep(10)
-                page_source = self.driver.page_source
-                games_from_site = site.parse_page(page_source, site.url)
 
-                # determine if games have been collected before
-                for site_game in games_from_site:
-                    found_in_existing_games = False
-                    for existing_game in games_collected:
-                        # This if statement checks to see if the team names are similar enough to be considered the same
-                        if SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio() >\
-                                self.difference_parameter and \
-                                SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio() >\
-                                self.difference_parameter:
-                            # code to check sequence matcher
-                            print(" We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(site_game.team_1_name, existing_game.team_1_name, SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio(), site_game.team_2_name, existing_game.team_2_name,  SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio()))
+        try:
+            print("Crawler started.")
+            while True:
+                games_collected = []
+                for site in self.sites:
+                    self.driver.get(site.url)
+                    sleep(10)
+                    page_source = self.driver.page_source
+                    games_from_site = site.parse_page(page_source, site.url)
 
-                            # update existing game
-                            existing_game.site_odds = existing_game.site_odds + site_game.site_odds
-                            found_in_existing_games = True
+                    # determine if games have been collected before
+                    for site_game in games_from_site:
+                        found_in_existing_games = False
+                        for existing_game in games_collected:
+                            # This if statement checks to see if the team names are similar enough to be considered the same
+                            if SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio() >\
+                                    self.difference_parameter and \
+                                    SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio() >\
+                                    self.difference_parameter:
+                                # code to check sequence matcher
+                                print(" We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(site_game.team_1_name, existing_game.team_1_name, SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio(), site_game.team_2_name, existing_game.team_2_name,  SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio()))
 
-                    if not found_in_existing_games:
-                        games_collected.append(site_game)
+                                # update existing game
+                                existing_game.site_odds = existing_game.site_odds + site_game.site_odds
+                                found_in_existing_games = True
 
-            for game in games_collected:
-                if len(game.site_odds) >= 2:
-                    print(game)
-                    game_queue.put(game)
+                        if not found_in_existing_games:
+                            games_collected.append(site_game)
 
-            print("Completed scraping cycle")
-            time.sleep(self.interval_minutes * 60) # Wait for time in mins * 60 secs
+                for game in games_collected:
+                    if len(game.site_odds) >= 2:
+                        print(game)
+                        game_queue.put(game)
+
+                print("Completed scraping cycle")
+
+                if shutdown_event.wait(self.interval_minutes * 60): # Wait for time in mins * 60 secs or unless shutdown event happens
+                    print("Crawler detected shutdown event.")
+                    self.driver.quit()
+                    break
+
+        except Exception as e:
+            shutdown_event.set()  # Put none in queue to propagate shutdown
+            game_queue.put(None)
+            self.arb_queue.put(None)
+            self.driver.quit()
+            traceback.print_exc()
+            self.send_error_notification()
 
         print("Crawler shutting down")
 
-    def game_analyzer(self, game, arb_queue):
+    def game_analyzer(self, game, arb_queue, shutdown_event):
         """
         Worker thread routine for game_watcher to for analysis
 
@@ -394,10 +413,9 @@ class ArbCrawler:
         populated in the Game object
 
         :param game: Game object, the game that is being analyzed
+        :param arb_queue: Queue to place Game objects that have been deemed arbitrage opportunities
         :return: None
         """
-        # Check to see among SiteOdds if there is an arbitrage play
-        time.sleep(1)
 
         # compare odds between all combinations of sites
         for i in game.site_odds:
@@ -429,7 +447,7 @@ class ArbCrawler:
                             arb_queue.put(game)
                             return
 
-    def game_watcher(self, game_queue, arb_queue):
+    def game_watcher(self, game_queue, arb_queue, shutdown_event):
         """
         Waits for games to enter the queue and then adds them to a threadpool for analysis.
 
@@ -437,20 +455,27 @@ class ArbCrawler:
         :return:
         """
         print("Game watcher starting up...")
+        try:
 
-        #create a pool of worker threads to help game analyzer
-        pool = ThreadPool(processes=5)
+            #create a pool of worker threads to help game analyzer
+            pool = ThreadPool(processes=5)
 
-        print("Game watcher started.")
-        while True:
-            found_game = game_queue.get()
-            if found_game is None:
-                arb_queue.put(None)
-                pool.join()
-                sys.exit()
+            print("Game watcher started.")
+            while True:
+                found_game = game_queue.get()
+                if found_game is None:  # Crawler initiated shutdown
+                    break
 
-            pool.apply_async(func=self.game_analyzer, args=(found_game, arb_queue,))
+                pool.apply_async(func=self.game_analyzer, args=(found_game, arb_queue,))
 
+        except Exception as e:
+            print("ERROR")
+            traceback.print_exc()
+            shutdown_event.set()  # Alert Crawler
+            arb_queue.put(None)  # Alert game analyzer
+            self.send_error_notification()
+
+        pool.close()
         pool.join()
 
     def send_game_notification(self, game):
@@ -492,28 +517,57 @@ class ArbCrawler:
         except:
             print("There was an error sending an email.")
 
-    def arbitrage_actioner(self, arb_queue):
+    def send_error_notification(self):
+        """
+        Upon unexpected shutdown of ArbCrawler, send notification to email list
+        :return: None
+        """
+        subject = 'ArbCrawler Error: UNEXPECTED SHUTDOWN'
+
+        mail_body = "ArbCrawler bot has unexpectedly shutdown.\n"
+
+        message = "From: {}\nTo: {}\nSubject: {} {}".format(self.gmail_user, ", ".join(self.email_recipients),
+                                                            subject, mail_body)
+
+        try:
+            server = smtplib.SMTP_SSL(self.mail_server, self.mail_server_port)
+            server.ehlo()
+            server.login(self.gmail_user, self.gmail_pass)
+            server.sendmail(self.gmail_user, self.email_recipients, message)
+            server.close()
+        except:
+            print("There was an error sending an email.")
+
+    def arbitrage_actioner(self, arb_queue, shutdown_event):
 
         print("Arbitrage actioner starting up...")
+        try:
+            while True:
+                found_arbitrage_opportunity = arb_queue.get()
+                if found_arbitrage_opportunity is None:
+                    break
+                print("ARBITRAGE OPPORTUNITY")
+                print(found_arbitrage_opportunity)
+                print("    Wager {} {} at odds {} on {} and {} {} at odds {} on {} for margin {}".format(found_arbitrage_opportunity.team_1_name,
+                                                                                   found_arbitrage_opportunity.wager_ratio_1,
+                                                                                   found_arbitrage_opportunity.arb_site_odds_1.odds1,
+                                                                                   found_arbitrage_opportunity.arb_site_odds_1.site.name,
+                                                                                   found_arbitrage_opportunity.team_2_name,
+                                                                                   found_arbitrage_opportunity.wager_ratio_2,
+                                                                                   found_arbitrage_opportunity.arb_site_odds_2.odds2,
+                                                                                   found_arbitrage_opportunity.arb_site_odds_2.site.name,
+                                                                                   found_arbitrage_opportunity.margin))
 
-        while True:
-            found_arbitrage_opportunity = arb_queue.get()
-            if found_arbitrage_opportunity is None:
-                sys.exit()
-            print("ARBITRAGE OPPORTUNITY")
-            print(found_arbitrage_opportunity)
-            print("    Wager {} {} at odds {} on {} and {} {} at odds {} on {} for margin {}".format(found_arbitrage_opportunity.team_1_name,
-                                                                               found_arbitrage_opportunity.wager_ratio_1,
-                                                                               found_arbitrage_opportunity.arb_site_odds_1.odds1,
-                                                                               found_arbitrage_opportunity.arb_site_odds_1.site.name,
-                                                                               found_arbitrage_opportunity.team_2_name,
-                                                                               found_arbitrage_opportunity.wager_ratio_2,
-                                                                               found_arbitrage_opportunity.arb_site_odds_2.odds2,
-                                                                               found_arbitrage_opportunity.arb_site_odds_2.site.name,
-                                                                               found_arbitrage_opportunity.margin))
+                # Notify by email
+                self.send_game_notification(found_arbitrage_opportunity)
+        except Exception as e:
+            print("ERROR")
+            traceback.print_exc()
+            shutdown_event.set()  # Alert Crawler
+            self.game_queue.put(None)  # Alert game watcher
+            self.send_error_notification()
 
-            # Notify by email
-            self.send_game_notification(found_arbitrage_opportunity)
+        print("Actioner shutting down.")
 
     def sigterm_handler(self, signal, frame):
         # NEEDS FIXING
@@ -528,20 +582,34 @@ class ArbCrawler:
 
         # Create and start the web crawler process
         print("Creating crawler process...")
-        self.crawler_process = Process(target=self.crawler, args=(self.game_queue,))
+        self.crawler_process = Process(target=self.crawler, args=(self.game_queue, self.shutdown_event,))
         self.crawler_process.start()
+        print("Done.")
 
         # Create and start the game analyzer process
         print("Creating game analyzer process...")
-        self.game_watcher_process = Process(target=self.game_watcher, args=(self.game_queue, self.arb_queue,))
+        self.game_watcher_process = Process(target=self.game_watcher, args=(self.game_queue, self.arb_queue, self.shutdown_event,))
         self.game_watcher_process.start()
+        print("Done.")
 
         # Create and start the arbitrage actioner process
         print("Creating game analyzer process...")
-        self.arbitrage_actioner_process = Process(target=self.arbitrage_actioner, args=(self.arb_queue,))
+        self.arbitrage_actioner_process = Process(target=self.arbitrage_actioner, args=(self.arb_queue, self.shutdown_event, ))
         self.arbitrage_actioner_process.start()
+        print("Done.")
 
         print("ArbCrawler started, workers running...")
+
+        # Very basic command line interface
+        while True:
+            command = input("$ ")
+            if command == 'exit':
+                print("ArbCrawler shutting down worker processes...")
+                self.shutdown_event.set()
+                self.game_queue.put(None)
+                self.arb_queue.put(None)
+                break
+
         self.crawler_process.join()
         self.game_watcher_process.join()
         self.arbitrage_actioner_process.join()
