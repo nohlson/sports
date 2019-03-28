@@ -133,7 +133,16 @@ class MyBookie(Site):
             ml1 = tags[i]['data-odds']
             ml2 = tags[i+1]['data-odds']
 
-            new_site_odds = SiteOdds(self, ml1=int(ml1), ml2=int(ml2))
+            if ml1 == "":
+                ml1 = None
+            else:
+                ml1 = int(ml1)
+            if ml2 == "":
+                ml2 = None
+            else:
+                ml2 = int(ml2)
+
+            new_site_odds = SiteOdds(self, ml1=ml1, ml2=ml2)
 
             found_games.append(Game(team_1_name=team_a, team_2_name=team_b, site_odds=new_site_odds))
 
