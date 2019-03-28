@@ -9,7 +9,7 @@ from selenium.webdriver.firefox.options import Options
 import re
 from bs4 import BeautifulSoup
 import signal
-from difflib import SequenceMatcher
+from fuzzywuzzy import fuzz
 import smtplib
 import traceback
 
@@ -276,7 +276,7 @@ class ArbCrawler:
         self.driver = webdriver.Firefox(options=options)
 
         # How similar names have to be to match. Smaller is more lenient, larger is more stringent
-        self.difference_parameter = 0.6
+        self.difference_parameter = 50
 
         self.mail_server = 'smtp.gmail.com'
         self.mail_server_port = 465
@@ -387,12 +387,17 @@ class ArbCrawler:
                             found_in_existing_games = False
                             for existing_game in games_collected:
                                 # This if statement checks to see if the team names are similar enough to be considered the same
-                                if SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio() >\
+                                if fuzz.token_set_ratio(site_game.team_1_name, existing_game.team_1_name) >\
                                         self.difference_parameter and \
-                                        SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio() >\
+                                        fuzz.token_set_ratio(site_game.team_2_name, existing_game.team_2_name) >\
                                         self.difference_parameter:
                                     # code to check sequence matcher
-                                    print(" We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(site_game.team_1_name, existing_game.team_1_name, SequenceMatcher(None, site_game.team_1_name.lower(), existing_game.team_1_name.lower()).ratio(), site_game.team_2_name, existing_game.team_2_name,  SequenceMatcher(None, site_game.team_2_name.lower(), existing_game.team_2_name.lower()).ratio()))
+                                    print(
+                                        " We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(
+                                            site_game.team_1_name, existing_game.team_1_name,
+                                            fuzz.token_set_ratio(site_game.team_1_name, existing_game.team_1_name),
+                                            site_game.team_2_name, existing_game.team_2_name,
+                                            fuzz.token_set_ratio(site_game.team_2_name, existing_game.team_2_name)))
 
                                     # update existing game
                                     existing_game.site_odds = existing_game.site_odds + site_game.site_odds
