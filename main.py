@@ -148,9 +148,9 @@ class MyBookie(Site):
         :param url: String URL of source location
         :return: List of Game objects
         """
-        
+
         found_games = self.parse_sportsbook_page(page_source)
-        self.logger.debug("PARSE_SPORTSBOOK_PAGE: MyBookie found games this run:")
+        self.logger.debug("PARSE_SPORTSBOOK_PAGE: MyBookie from url {} found games this run:".format(url))
         self.logger.debug(found_games)
 
         return found_games
