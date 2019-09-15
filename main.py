@@ -1,3 +1,4 @@
+from __future__ import division
 from multiprocessing import Process, Queue
 from multiprocessing.pool import ThreadPool
 from multiprocessing import Event
