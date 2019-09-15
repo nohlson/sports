@@ -4,3 +4,4 @@ pages = [
     { site_name = "MyBookie", url = "https://mybookie.ag/sportsbook/college-football"},
     { site_name = "MyBookie", url = "https://mybookie.ag/sportsbook/mlb/"}
 ]
+interval_minutes = 5

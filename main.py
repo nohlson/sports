@@ -165,10 +165,6 @@ class MyBookie(Site):
         for i in range(0, len(game_html_blocks)):
             team_a = game_html_blocks[i].find_all("div", {"class":"team-lines"})[0].find_all("a")[0].get_text()
             team_b = game_html_blocks[i].find_all("div", {"class":"team-lines"})[0].find_all("a")[1].get_text()
-            self.logger.debug("PARSE_SPORTSBOOK_PAGE: Parsed game {} vs. {}".format(team_a, team_b))
-            self.logger.debug("PARSE_SPORTSBOOK_PAGE: {}".format(team_a))
-            self.logger.debug("PARSE_SPORTSBOOK_PAGE: {}". format(team_b))
-
 
             # Special Case: ignore any first half bets, first two characters will be "1H"
             # TODO: make this better so that 1H bets become own game
@@ -206,6 +202,8 @@ class MyBookie(Site):
 
             found_games.append(Game(team_1_name=team_a, team_2_name=team_b, site_odds=new_site_odds))
 
+        self.logger.debug("PARSE_SPORTSBOOK_PAGE: MyBookie found games this run:")
+        self.logger.debug(found_games)
         return found_games
 
 
@@ -345,7 +343,7 @@ class ArbCrawler:
         self.email_recipients = self.email_config['recipients']
 
         # interval in minutes for site recheck
-        self.interval_minutes = 5
+        self.interval_minutes = self.config['interval_minutes']
 
     def moneyline_to_decimal(self, ml):
         """ Converts the positive or negative moneyline value into
@@ -473,7 +471,7 @@ class ArbCrawler:
                         self.logger.debug("CRAWLER: Adding game {} to game queue".format(str(game)))
                         game_queue.put(game)
 
-                self.logger.debug("CRAWLER: Completed scraping cycle")
+                self.logger.debug("CRAWLER: Completed scraping cycle. Next cycle in {} minutes".format(self.interval_minutes))
 
                 if shutdown_event.wait(self.interval_minutes * 60): # Wait for time in mins * 60 secs or unless shutdown event happens
                     self.logger.debug("Crawler detected shutdown event.")
