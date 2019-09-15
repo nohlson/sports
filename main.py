@@ -12,7 +12,8 @@ import signal
 from fuzzywuzzy import fuzz
 import smtplib
 import traceback
-
+import logging
+logging.basicConfig(filename='arb_crawler.log', level=logging.DEBUG)
 
 class InvalidOdds(Exception):
     pass
@@ -95,6 +96,8 @@ class Bovada(Site):
 
             found_games.append(Game(team_1_name=team_a, team_2_name=team_b, site_odds=new_site_odds))
 
+        logging.debug("BOVADA: PARSE_ALL_SPORTS_PAGE: Bovada found games this run:")
+        logging.debug(found_games)
         return found_games
 
 
@@ -375,8 +378,11 @@ class ArbCrawler:
             while True:
                 games_collected = []
                 for site in self.sites:
+                    logging.debug("ARB_CRAWLER: Site to be checked this round:")
+                    logging.debug(site)
                     for url in site.urls:
                         print("Getting games from: {}".format(url))
+                        logging.debug("ARB_CRAWLER: Getting games from: {}".format(url))
                         self.driver.get(url)
                         sleep(10)
                         page_source = self.driver.page_source
@@ -384,6 +390,9 @@ class ArbCrawler:
 
                         # determine if games have been collected before
                         for site_game in games_from_site:
+                            logging.debug("ARB_CRAWLER: Checking game:")
+                            logging.debug(site_game)
+                            logging.debug("for a existing match this round")
                             found_in_existing_games = False
                             for existing_game in games_collected:
                                 # This if statement checks to see if the team names are similar enough to be considered the same
@@ -398,8 +407,14 @@ class ArbCrawler:
                                             fuzz.token_set_ratio(site_game.team_1_name, existing_game.team_1_name),
                                             site_game.team_2_name, existing_game.team_2_name,
                                             fuzz.token_set_ratio(site_game.team_2_name, existing_game.team_2_name)))
+                                    logging.debug("ARB_CRAWLER: We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(
+                                            site_game.team_1_name, existing_game.team_1_name,
+                                            fuzz.token_set_ratio(site_game.team_1_name, existing_game.team_1_name),
+                                            site_game.team_2_name, existing_game.team_2_name,
+                                            fuzz.token_set_ratio(site_game.team_2_name, existing_game.team_2_name)))
 
                                     # update existing game
+                                    logging.debug("ARB_CRAWLER: Adding odds information to the existing game")
                                     existing_game.site_odds = existing_game.site_odds + site_game.site_odds
                                     found_in_existing_games = True
 
@@ -409,12 +424,14 @@ class ArbCrawler:
                 for game in games_collected:
                     if len(game.site_odds) >= 2:
                         print(game)
+                        logging.debug("ARB_CRAWLER: Adding game {} vs. {} to game queue".format(game.team_1_name, game.team_2_name))
                         game_queue.put(game)
 
                 print("Completed scraping cycle")
 
                 if shutdown_event.wait(self.interval_minutes * 60): # Wait for time in mins * 60 secs or unless shutdown event happens
                     print("Crawler detected shutdown event.")
+                    logging.debug("ARB_CRAWLER: Crawler detected shutdown event.")
                     self.driver.quit()
                     break
 
@@ -486,9 +503,11 @@ class ArbCrawler:
             print("Game watcher started.")
             while True:
                 found_game = game_queue.get()
+                logging.debug("GAME_WATCHER: recieved game in queue")
                 if found_game is None:  # Crawler initiated shutdown
+                    logger.debug("GAME_WATCHER: Recieved None type game")
                     break
-
+                logging.debug("GAME_WATCHER: Adding game to game analyzer queue")
                 pool.apply_async(func=self.game_analyzer, args=(found_game, arb_queue,))
 
         except Exception as e:
@@ -532,6 +551,7 @@ class ArbCrawler:
                                                             subject, mail_body)
 
         try:
+            logging.debug("SEND_GAME_NOTIFICATION: Attemting to send an email to {} for arbitrage notification".format(self.email_recipeints))
             server = smtplib.SMTP_SSL(self.mail_server, self.mail_server_port)
             server.ehlo()
             server.login(self.gmail_user, self.gmail_pass)
@@ -553,6 +573,7 @@ class ArbCrawler:
                                                             subject, mail_body)
 
         try:
+            logging.debug("SEND_GAME_NOTIFICATION: Sending an email to {} for unexpected shutdown event".format(self.email_recipients))
             server = smtplib.SMTP_SSL(self.mail_server, self.mail_server_port)
             server.ehlo()
             server.login(self.gmail_user, self.gmail_pass)
@@ -567,6 +588,7 @@ class ArbCrawler:
         try:
             while True:
                 found_arbitrage_opportunity = arb_queue.get()
+                logging.debug("ARBITRAGE_ACTIONER: Actioning on found arbitrage opportunity for game {} vs. {}".format(found_arbitrage_opportunity.team_1_name, found_arbitrage_opportunity.team_2_name))
                 if found_arbitrage_opportunity is None:
                     break
                 print("ARBITRAGE OPPORTUNITY")

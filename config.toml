@@ -1,6 +1,6 @@
 pages = [
-    { site_name = "Bovada", url = "https://www.bovada.lv/sports/basketball/ncaa-march-madness" },
+    { site_name = "Bovada", url = "https://bovada.lv/sports/football/college-football" },
     { site_name = "Bovada", url = "https://www.bovada.lv/sports/baseball/mlb" },
-    { site_name = "MyBookie", url = "https://mybookie.ag/sportsbook/ncaa-basketball/"},
+    { site_name = "MyBookie", url = "https://mybookie.ag/sportsbook/college-football"},
     { site_name = "MyBookie", url = "https://mybookie.ag/sportsbook/mlb/"}
 ]
