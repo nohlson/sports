@@ -275,7 +275,7 @@ class ArbCrawler:
 
         # Driver for selenium
         options = Options()
-        options.headless = True
+        options.headless = False
         self.driver = webdriver.Firefox(options=options)
 
         # How similar names have to be to match. Smaller is more lenient, larger is more stringent
@@ -505,7 +505,7 @@ class ArbCrawler:
                 found_game = game_queue.get()
                 logging.debug("GAME_WATCHER: recieved game in queue")
                 if found_game is None:  # Crawler initiated shutdown
-                    logger.debug("GAME_WATCHER: Recieved None type game")
+                    logging.debug("GAME_WATCHER: Recieved None type game")
                     break
                 logging.debug("GAME_WATCHER: Adding game to game analyzer queue")
                 pool.apply_async(func=self.game_analyzer, args=(found_game, arb_queue,))
