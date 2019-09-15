@@ -67,8 +67,11 @@ class Bovada(Site):
         :param url: String URL of source location
         :return: List of Game objects
         """
+        found_games = self.parse_all_sports_page(page_source)
+        self.logger.debug("PARSE_ALL_SPORTS_PAGE: Bovada from url {} found games this run:".format(url))
+        self.logger.debug(found_games)
 
-        return self.parse_all_sports_page(page_source)
+        return found_games
 
     def parse_all_sports_page(self, page_source):
         """
@@ -121,7 +124,6 @@ class Bovada(Site):
 
             found_games.append(Game(team_1_name=team_a, team_2_name=team_b, site_odds=new_site_odds))
 
-        self.logger.debug("PARSE_ALL_SPORTS_PAGE: Bovada found games this run:")
         self.logger.debug(found_games)
         return found_games
 
