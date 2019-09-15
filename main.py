@@ -13,7 +13,21 @@ from fuzzywuzzy import fuzz
 import smtplib
 import traceback
 import logging
-logging.basicConfig(filename='arb_crawler.log', level=logging.DEBUG)
+logging.basicConfig(filename='connections.log', level=logging.DEBUG)
+
+
+def setup_logger(name, log_file, formatter, level=logging.DEBUG):
+    handler = logging.FileHandler(log_file)
+    handler.setFormatter(formatter)
+
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+
+    logger.addHandler(handler)
+
+    return logger
+
+
 
 class InvalidOdds(Exception):
     pass
@@ -28,9 +42,19 @@ class Site:
         self.name = name
         self.urls = urls
 
+    def __repr__(self):
+        return "Site name: {} urls: {}\n".format(self.name, str(self.urls))
 
 class Bovada(Site):
     def __init__(self, name, urls):
+
+        # Setup Logger
+        self.log_name = "bovada_log"
+        self.log_file = "bovada.log"
+        self.formatter = logging.Formatter("%(levelname)s BOVADA: %(message)s")
+
+        self.logger = setup_logger(self.log_name, self.log_file, self.formatter)
+
         Site.__init__(self, name, urls)
         self.games_xpath = "/html/body/bx-site/ng-component/div/sp-main/div/main/div/section/main/sp-home/div/sp-next-events/div/div/div/sp-coupon"
 
@@ -96,13 +120,19 @@ class Bovada(Site):
 
             found_games.append(Game(team_1_name=team_a, team_2_name=team_b, site_odds=new_site_odds))
 
-        logging.debug("BOVADA: PARSE_ALL_SPORTS_PAGE: Bovada found games this run:")
-        logging.debug(found_games)
+        self.logger.debug("PARSE_ALL_SPORTS_PAGE: Bovada found games this run:")
+        self.logger.debug(found_games)
         return found_games
 
 
 class MyBookie(Site):
     def __init__(self, name, urls):
+        self.log_name = "mybookie_log"
+        self.log_file = "mybookie.log"
+        self.formatter = logging.Formatter("%(levelname)s MYBOOKIE: %(message)s")
+
+        self.logger = setup_logger(self.log_name, self.log_file, self.formatter)
+
         Site.__init__(self, name, urls)
         self.games_xpath = ""
         self.game_element_mapping = {}
@@ -129,30 +159,48 @@ class MyBookie(Site):
         found_games = []
 
         soup = BeautifulSoup(page_source, 'lxml')
-        tags = soup.find_all("button", {"class": "lines-odds", "data-wager-type": "ml"})
+        game_html_blocks = soup.find_all("div", {"class":"row m-0 mobile sportsbook-lines mb-2 border"})
 
-        for i in range(0, len(tags), 2):
-            team_a = tags[i]['data-team']
-            team_b = tags[i+1]['data-team']
+
+        for i in range(0, len(game_html_blocks)):
+            team_a = game_html_blocks[i].find_all("div", {"class":"team-lines"})[0].find_all("a")[0].get_text()
+            team_b = game_html_blocks[i].find_all("div", {"class":"team-lines"})[0].find_all("a")[1].get_text()
+            self.logger.debug("PARSE_SPORTSBOOK_PAGE: Parsed game {} vs. {}".format(team_a, team_b))
+            self.logger.debug("PARSE_SPORTSBOOK_PAGE: {}".format(team_a))
+            self.logger.debug("PARSE_SPORTSBOOK_PAGE: {}". format(team_b))
+
 
             # Special Case: ignore any first half bets, first two characters will be "1H"
             # TODO: make this better so that 1H bets become own game
             if team_a[:2] == "1H" or team_b[:2] == "1H":
                 continue
 
-            ml1 = tags[i]['data-odds']
-            ml2 = tags[i+1]['data-odds']
+            ml1_text_data = game_html_blocks[i].find_all("div", {"class": "spread-lines"})[0].find_all("button")[0].get_text()
+            ml2_text_data = game_html_blocks[i].find_all("div", {"class": "spread-lines"})[0].find_all("button")[1].get_text()
+
+
 
             # Skip this game if there aren't odds for both outcomes
             # TODO: make this better
-            if ml1 == "":
+            if ml1_text_data == "":
                 continue
             else:
-                ml1 = int(ml1)
-            if ml2 == "":
+                ml1_text = re.search('\((.+?)\)', ml1_text_data)
+                if ml1_text is None:
+                    # There is no spread data for this game
+                    continue
+                else:
+                    ml1 = int(ml1_text.group(1))
+
+            if ml2_text_data == "":
                 continue
             else:
-                ml2 = int(ml2)
+                ml2_text = re.search('\((.+?)\)', ml2_text_data)
+                if ml2_text is None:
+                    # There is no spread data for this game
+                    continue
+                else:
+                    ml2 = int(ml2_text.group(1))
 
             new_site_odds = SiteOdds(self, ml1=ml1, ml2=ml2)
 
@@ -231,7 +279,13 @@ class ArbCrawler:
     Maths: http://www.aussportsbetting.com/guide/sports-betting-arbitrage/
     """
 
-    def __init__(self, config_file):
+    def __init__(self, config_file, email_config_file):
+        self.log_name = "arb_crawler.log"
+        self.log_file = "arb_crawler.log"
+        self.formatter = logging.Formatter("%(levelname)s ARB_CRAWLER: %(message)s")
+
+        self.logger = setup_logger(self.log_name, self.log_file, self.formatter)
+
         self.crawler_process = None
         self.arbitrage_actioner_process = None
         self.game_watcher_process = None
@@ -244,6 +298,10 @@ class ArbCrawler:
         with open(config_file, 'r') as f:
             c = f.read()
             self.config = toml.loads(c)
+
+        with open(email_config_file, 'r') as f:
+            c = f.read()
+            self.email_config = toml.loads(c)
 
         # Create the site object that arbcrawler will use from the config
         # Only supports Bovada and MyBookie
@@ -265,8 +323,7 @@ class ArbCrawler:
 
         for i in self.sites:
             for url in i.urls:
-                print(i.name)
-                print(url)
+                self.logger.debug("INIT: Adding from config : {}".format(str(i)))
 
         # game queue is a queue for games that the crawler has found
         self.game_queue = Queue()
@@ -275,17 +332,17 @@ class ArbCrawler:
 
         # Driver for selenium
         options = Options()
-        options.headless = False
+        options.headless = True
         self.driver = webdriver.Firefox(options=options)
 
         # How similar names have to be to match. Smaller is more lenient, larger is more stringent
         self.difference_parameter = 50
 
-        self.mail_server = 'smtp.gmail.com'
-        self.mail_server_port = 465
-        self.gmail_user = 'sportsarbbot@gmail.com'
-        self.gmail_pass = 'S7#lf5wU6m'
-        self.email_recipients = ['nateohlson@gmail.com', '5743231919@vtext.com']
+        self.mail_server = self.email_config['email_server']
+        self.mail_server_port = self.email_config['email_port']
+        self.gmail_user = self.email_config['email_user']
+        self.gmail_pass = self.email_config['email_password']
+        self.email_recipients = self.email_config['recipients']
 
         # interval in minutes for site recheck
         self.interval_minutes = 5
@@ -371,18 +428,16 @@ class ArbCrawler:
         :return:
         """
 
-        print("Crawler starting up...")
+        self.logger.debug("CRAWLER: Crawler starting up...")
 
         try:
-            print("Crawler started.")
+            self.logger.debug("CRAWLER: Crawler started.")
             while True:
                 games_collected = []
                 for site in self.sites:
-                    logging.debug("ARB_CRAWLER: Site to be checked this round:")
-                    logging.debug(site)
+                    self.logger.debug("CRAWLER: Site to be checked this round: {}".format(str(site)))
                     for url in site.urls:
-                        print("Getting games from: {}".format(url))
-                        logging.debug("ARB_CRAWLER: Getting games from: {}".format(url))
+                        self.logger.debug("CRAWLER: Getting games from: {}".format(url))
                         self.driver.get(url)
                         sleep(10)
                         page_source = self.driver.page_source
@@ -390,9 +445,7 @@ class ArbCrawler:
 
                         # determine if games have been collected before
                         for site_game in games_from_site:
-                            logging.debug("ARB_CRAWLER: Checking game:")
-                            logging.debug(site_game)
-                            logging.debug("for a existing match this round")
+                            self.logger.debug("CRAWLER: Checking game: {} for an existing match this round".format(str(site_game)))
                             found_in_existing_games = False
                             for existing_game in games_collected:
                                 # This if statement checks to see if the team names are similar enough to be considered the same
@@ -401,20 +454,14 @@ class ArbCrawler:
                                         fuzz.token_set_ratio(site_game.team_2_name, existing_game.team_2_name) >\
                                         self.difference_parameter:
                                     # code to check sequence matcher
-                                    print(
-                                        " We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(
-                                            site_game.team_1_name, existing_game.team_1_name,
-                                            fuzz.token_set_ratio(site_game.team_1_name, existing_game.team_1_name),
-                                            site_game.team_2_name, existing_game.team_2_name,
-                                            fuzz.token_set_ratio(site_game.team_2_name, existing_game.team_2_name)))
-                                    logging.debug("ARB_CRAWLER: We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(
+                                    self.logger.debug("CRAWLER: We determined that {} was the same as {} with confidence {} and {} was the same as {} with confidence {}".format(
                                             site_game.team_1_name, existing_game.team_1_name,
                                             fuzz.token_set_ratio(site_game.team_1_name, existing_game.team_1_name),
                                             site_game.team_2_name, existing_game.team_2_name,
                                             fuzz.token_set_ratio(site_game.team_2_name, existing_game.team_2_name)))
 
                                     # update existing game
-                                    logging.debug("ARB_CRAWLER: Adding odds information to the existing game")
+                                    self.logger.debug("Adding odds information to the existing game")
                                     existing_game.site_odds = existing_game.site_odds + site_game.site_odds
                                     found_in_existing_games = True
 
@@ -423,15 +470,13 @@ class ArbCrawler:
 
                 for game in games_collected:
                     if len(game.site_odds) >= 2:
-                        print(game)
-                        logging.debug("ARB_CRAWLER: Adding game {} vs. {} to game queue".format(game.team_1_name, game.team_2_name))
+                        self.logger.debug("CRAWLER: Adding game {} to game queue".format(str(game)))
                         game_queue.put(game)
 
-                print("Completed scraping cycle")
+                self.logger.debug("CRAWLER: Completed scraping cycle")
 
                 if shutdown_event.wait(self.interval_minutes * 60): # Wait for time in mins * 60 secs or unless shutdown event happens
-                    print("Crawler detected shutdown event.")
-                    logging.debug("ARB_CRAWLER: Crawler detected shutdown event.")
+                    self.logger.debug("Crawler detected shutdown event.")
                     self.driver.quit()
                     break
 
@@ -443,7 +488,7 @@ class ArbCrawler:
             traceback.print_exc()
             self.send_error_notification()
 
-        print("Crawler shutting down")
+        self.logger.debug("CRAWLER: Crawler shutting down")
 
     def game_analyzer(self, game, arb_queue, shutdown_event):
         """
@@ -473,7 +518,7 @@ class ArbCrawler:
                             game.wager_ratio_1, game.wager_ratio_2 = self.determine_wager_ratio(i.odds1, j.odds2)
                             game.arb_site_odds_1 = i
                             game.arb_site_odds_2 = j
-                            print("Found arbitrage opportunity")
+                            self.logger.debug("GAME_ANALYZER: Found arbitrage opportunity")
                             arb_queue.put(game)
                             return
                         if self.determine_margin_decimal(i.odds2, j.odds1) < 0:
@@ -483,7 +528,7 @@ class ArbCrawler:
                             game.wager_ratio_2, game.wager_ratio_1 = self.determine_wager_ratio(i.odds2, j.odds1)
                             game.arb_site_odds_1 = j
                             game.arb_site_odds_2 = i
-                            print("Found arbitrage opportunity")
+                            self.logger.debug("GAME_ANALYZER: Found arbitrage opportunity")
                             arb_queue.put(game)
                             return
 
@@ -494,24 +539,24 @@ class ArbCrawler:
         :param game_queue:
         :return:
         """
-        print("Game watcher starting up...")
+        self.logger.debug("GAME_WATCHER: Game watcher starting up...")
         try:
 
             #create a pool of worker threads to help game analyzer
             pool = ThreadPool(processes=5)
 
-            print("Game watcher started.")
+            self.logger.debug("GAME_WATCHER: Game watcher started.")
             while True:
                 found_game = game_queue.get()
-                logging.debug("GAME_WATCHER: recieved game in queue")
+                self.logger.debug("GAME_WATCHER: recieved game in queue")
                 if found_game is None:  # Crawler initiated shutdown
-                    logging.debug("GAME_WATCHER: Recieved None type game")
+                    self.logger.debug("GAME_WATCHER: Recieved None type game")
                     break
-                logging.debug("GAME_WATCHER: Adding game to game analyzer queue")
+                self.logger.debug("GAME_WATCHER: Adding game to game analyzer queue")
                 pool.apply_async(func=self.game_analyzer, args=(found_game, arb_queue,))
 
         except Exception as e:
-            print("ERROR")
+            self.logger.debug("GAME_WATCHER: ERROR in applying game to analysis queue")
             traceback.print_exc()
             shutdown_event.set()  # Alert Crawler
             arb_queue.put(None)  # Alert game analyzer
@@ -551,14 +596,14 @@ class ArbCrawler:
                                                             subject, mail_body)
 
         try:
-            logging.debug("SEND_GAME_NOTIFICATION: Attemting to send an email to {} for arbitrage notification".format(self.email_recipeints))
+            self.logger.debug("SEND_GAME_NOTIFICATION: Attemting to send an email to {} for arbitrage notification".format(self.email_recipeints))
             server = smtplib.SMTP_SSL(self.mail_server, self.mail_server_port)
             server.ehlo()
             server.login(self.gmail_user, self.gmail_pass)
             server.sendmail(self.gmail_user, self.email_recipients, message)
             server.close()
-        except:
-            print("There was an error sending an email.")
+        except :
+            self.logger.debug("SEND_GAME_NOTIFICATION: ERROR There was an error sending an email {}". format(sys.exc_info()[0]))
 
     def send_error_notification(self):
         """
@@ -573,27 +618,27 @@ class ArbCrawler:
                                                             subject, mail_body)
 
         try:
-            logging.debug("SEND_GAME_NOTIFICATION: Sending an email to {} for unexpected shutdown event".format(self.email_recipients))
+            self.logger.debug("SEND_GAME_NOTIFICATION: Sending an email to {} for unexpected shutdown event".format(self.email_recipients))
             server = smtplib.SMTP_SSL(self.mail_server, self.mail_server_port)
             server.ehlo()
             server.login(self.gmail_user, self.gmail_pass)
             server.sendmail(self.gmail_user, self.email_recipients, message)
             server.close()
         except:
-            print("There was an error sending an email.")
+            self.logger.debug("SEND_ERROR_NOTIFICATION: ERROR There was an error sending an email.")
 
     def arbitrage_actioner(self, arb_queue, shutdown_event):
 
-        print("Arbitrage actioner starting up...")
+        self.logger.debug("ARBITRAGE_ACTIONER: Arbitrage actioner starting up...")
         try:
             while True:
                 found_arbitrage_opportunity = arb_queue.get()
-                logging.debug("ARBITRAGE_ACTIONER: Actioning on found arbitrage opportunity for game {} vs. {}".format(found_arbitrage_opportunity.team_1_name, found_arbitrage_opportunity.team_2_name))
+                self.logger.debug("ARBITRAGE_ACTIONER: Actioning on found arbitrage opportunity for game {} vs. {}".format(found_arbitrage_opportunity.team_1_name, found_arbitrage_opportunity.team_2_name))
                 if found_arbitrage_opportunity is None:
                     break
-                print("ARBITRAGE OPPORTUNITY")
-                print(found_arbitrage_opportunity)
-                print("    Wager {} {} at odds {} on {} and {} {} at odds {} on {} for margin {}".format(found_arbitrage_opportunity.team_1_name,
+                    self.logger.debug("ARBITRAGE_ACTIONER: ARBITRAGE OPPORTUNITY")
+                    self.logger.debug(found_arbitrage_opportunity)
+                    self.logger.debug("    Wager {} {} at odds {} on {} and {} {} at odds {} on {} for margin {}".format(found_arbitrage_opportunity.team_1_name,
                                                                                    found_arbitrage_opportunity.wager_ratio_1,
                                                                                    found_arbitrage_opportunity.arb_site_odds_1.odds1,
                                                                                    found_arbitrage_opportunity.arb_site_odds_1.site.name,
@@ -606,50 +651,50 @@ class ArbCrawler:
                 # Notify by email
                 self.send_game_notification(found_arbitrage_opportunity)
         except Exception as e:
-            print("ERROR")
+            self.logger.debug("ARBITRAGE_ACTIONER: ERROR Error while actioning arbitrage opportunity")
             traceback.print_exc()
             shutdown_event.set()  # Alert Crawler
             self.game_queue.put(None)  # Alert game watcher
             self.send_error_notification()
 
-        print("Actioner shutting down.")
+            self.logger.debug("ARBITRAGE_ACTIONER: Actioner shutting down.")
 
     def sigterm_handler(self, signal, frame):
         # NEEDS FIXING
-        print('Shutting down')
+        self.logger.debug('SIGTERM_HANDLER: Shutting down')
         self.game_queue.put(None)
         self.arb_queue.put(None)
         sys.exit(0)
 
     def main(self):
-        print("Starting ArbCrawler...")
+        self.logger.debug("MAIN: Starting ArbCrawler...")
         signal.signal(signal.SIGTERM, self.sigterm_handler)
 
         # Create and start the web crawler process
-        print("Creating crawler process...")
+        self.logger.debug("MAIN: Creating crawler process...")
         self.crawler_process = Process(target=self.crawler, args=(self.game_queue, self.shutdown_event,))
         self.crawler_process.start()
-        print("Done.")
+        self.logger.debug("MAIN: Done.")
 
         # Create and start the game analyzer process
-        print("Creating game analyzer process...")
+        self.logger.debug("MAIN: Creating game analyzer process...")
         self.game_watcher_process = Process(target=self.game_watcher, args=(self.game_queue, self.arb_queue, self.shutdown_event,))
         self.game_watcher_process.start()
-        print("Done.")
+        self.logger.debug("MAIN: Done.")
 
         # Create and start the arbitrage actioner process
-        print("Creating game analyzer process...")
+        self.logger.debug("MAIN: Creating game analyzer process...")
         self.arbitrage_actioner_process = Process(target=self.arbitrage_actioner, args=(self.arb_queue, self.shutdown_event, ))
         self.arbitrage_actioner_process.start()
-        print("Done.")
+        self.logger.debug("MAIN: Done.")
 
-        print("ArbCrawler started, workers running...")
+        self.logger.debug("MAIN: ArbCrawler started, workers running...")
 
         # Very basic command line interface
         while True:
             command = input("$ ")
             if command == 'exit':
-                print("ArbCrawler shutting down worker processes...")
+                self.logger.debug("MAIN: ArbCrawler shutting down worker processes...")
                 self.shutdown_event.set()
                 self.game_queue.put(None)
                 self.arb_queue.put(None)
@@ -659,15 +704,15 @@ class ArbCrawler:
         self.game_watcher_process.join()
         self.arbitrage_actioner_process.join()
 
-        print("Exiting ArbCrawler")
+        self.logger.debug("MAIN: Exiting ArbCrawler")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Please supply a config file")
+    if len(sys.argv) < 3:
+        print("Please supply a config file and email config file")
         sys.exit()
 
-    arb_crawler = ArbCrawler(sys.argv[1])
+    arb_crawler = ArbCrawler(sys.argv[1], sys.argv[2])
 
     arb_crawler.main()
 
