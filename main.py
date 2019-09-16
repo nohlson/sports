@@ -14,6 +14,7 @@ from fuzzywuzzy import fuzz
 import smtplib
 import traceback
 import logging
+
 logging.basicConfig(filename='connections.log', level=logging.DEBUG)
 
 
@@ -43,6 +44,9 @@ class Site:
         self.name = name
         self.urls = urls
 
+    def copy_just_fields(self):
+        return Site(self.name, self.urls)
+
     def __repr__(self):
         return "Site name: {} urls: {}\n".format(self.name, str(self.urls))
 
@@ -52,7 +56,7 @@ class Bovada(Site):
         # Setup Logger
         self.log_name = "bovada_log"
         self.log_file = "bovada.log"
-        self.formatter = logging.Formatter("%(levelname)s BOVADA: %(message)s")
+        self.formatter = logging.Formatter("%(asctime)s %(levelname)s BOVADA: %(message)s")
 
         self.logger = setup_logger(self.log_name, self.log_file, self.formatter)
 
@@ -132,7 +136,7 @@ class MyBookie(Site):
     def __init__(self, name, urls):
         self.log_name = "mybookie_log"
         self.log_file = "mybookie.log"
-        self.formatter = logging.Formatter("%(levelname)s MYBOOKIE: %(message)s")
+        self.formatter = logging.Formatter("%(asctime)s %(levelname)s MYBOOKIE: %(message)s")
 
         self.logger = setup_logger(self.log_name, self.log_file, self.formatter)
 
@@ -228,6 +232,10 @@ class SiteOdds:
             return (ml + 100)/100
         return 100 / -ml + 1
 
+    def copy(self):
+        return SiteOdds(self.site.copy_just_fields(), self.ml1, self.ml2, self.odds1, self.odds1, self.url)
+
+
     def __init__(self, site, ml1=None, ml2=None, odds1=None, odds2=None, url=None):
         if ml1 is None and ml2 is None and odds1 is None and odds2 is None:
             raise InvalidOdds
@@ -267,8 +275,24 @@ class Game:
         self.time = None
         self.date = None
 
-    def add_site_odds(self, site_odds):
-        self.site_odds.append(site_odds)
+    def copy(self):
+        game = Game(self.team_1_name, self.team_2_name)
+
+        for i in range(len(self.site_odds)):
+            game.site_odds.append(self.site_odds[i].copy())
+
+        game.arbitrage_opportunity = self.arbitrage_opportunity
+        game.margin = self.margin
+        game.wager_ratio_1 = self.wager_ratio_1
+        game.wager_ratio_2 = self.wager_ratio_2
+        game.arb_site_odds_1 = self.arb_site_odds_1
+        game.arb_site_odds_2 = self.arb_site_odds_2
+
+        game.league = self.league
+        game.time = self.time
+        game.date = self.date
+
+        return game
 
     def __repr__(self):
         repr_str = "{} vs. {}\n".format(self.team_1_name, self.team_2_name)
@@ -286,7 +310,7 @@ class ArbCrawler:
     def __init__(self, config_file, email_config_file):
         self.log_name = "arb_crawler.log"
         self.log_file = "arb_crawler.log"
-        self.formatter = logging.Formatter("%(levelname)s ARB_CRAWLER: %(message)s")
+        self.formatter = logging.Formatter("%(asctime)s %(levelname)s ARB_CRAWLER: %(message)s")
 
         self.logger = setup_logger(self.log_name, self.log_file, self.formatter)
 
@@ -474,8 +498,10 @@ class ArbCrawler:
 
                 for game in games_collected:
                     if len(game.site_odds) >= 2:
-                        self.logger.debug("CRAWLER: Adding game {} to game queue".format(str(game)))
-                        game_queue.put(game)
+                        # Performing deep copy and removing logger object from games siteodds sites
+                        game_copy = game.copy()
+                        self.logger.debug("CRAWLER: Adding game {} to game queue".format(str(game_copy)))
+                        game_queue.put(game_copy)
 
                 self.logger.debug("CRAWLER: Completed scraping cycle. Next cycle in {} minutes".format(self.interval_minutes))
 
@@ -639,10 +665,11 @@ class ArbCrawler:
                 found_arbitrage_opportunity = arb_queue.get()
                 self.logger.debug("ARBITRAGE_ACTIONER: Actioning on found arbitrage opportunity for game {} vs. {}".format(found_arbitrage_opportunity.team_1_name, found_arbitrage_opportunity.team_2_name))
                 if found_arbitrage_opportunity is None:
-                    break
-                    self.logger.debug("ARBITRAGE_ACTIONER: ARBITRAGE OPPORTUNITY")
-                    self.logger.debug(found_arbitrage_opportunity)
-                    self.logger.debug("    Wager {} {} at odds {} on {} and {} {} at odds {} on {} for margin {}".format(found_arbitrage_opportunity.team_1_name,
+                    sys.exit()
+
+                self.logger.debug("ARBITRAGE_ACTIONER: ARBITRAGE OPPORTUNITY")
+                self.logger.debug(found_arbitrage_opportunity)
+                self.logger.debug("    Wager {} {} at odds {} on {} and {} {} at odds {} on {} for margin {}".format(found_arbitrage_opportunity.team_1_name,
                                                                                    found_arbitrage_opportunity.wager_ratio_1,
                                                                                    found_arbitrage_opportunity.arb_site_odds_1.odds1,
                                                                                    found_arbitrage_opportunity.arb_site_odds_1.site.name,
